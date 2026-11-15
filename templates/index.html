@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KUCET Smart Agriculture</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', sans-serif; background: linear-gradient(135deg, #071e11, #0f3b21); color: #f1f5f9; min-height: 100vh; }
+    header { background: rgba(0,0,0,0.35); padding: 14px 24px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.12); flex-wrap: wrap; gap: 10px; }
+    .brand { font-weight: 700; font-size: 15px; color: #86efac; letter-spacing: 0.4px; }
+    .hdr-right { display: flex; align-items: center; gap: 12px; }
+    .badge { padding: 6px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; background: #dc2626; color: #fff; }
+    .badge.online { background: #16a34a; }
+    .logout { color: #cbd5e1; text-decoration: none; font-size: 13px; border: 1px solid rgba(255,255,255,0.2); padding: 5px 12px; border-radius: 8px; }
+    .wrap { max-width: 1200px; margin: 20px auto; padding: 0 18px; display: grid; gap: 18px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+    .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+    .card { background: rgba(255,255,255,0.07); border: 1px solid rgba(255,255,255,0.14); border-radius: 14px; padding: 18px; }
+    .lbl { font-size: 12px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.6px; }
+    .val { font-size: 30px; font-weight: 800; margin-top: 6px; color: #fff; }
+    .sub { font-size: 12px; color: #86efac; margin-top: 4px; }
+    .danger { color: #f87171; }
+    .btn-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+    button { border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; background: #22c55e; color: #052e16; }
+    button.sec { background: rgba(255,255,255,0.14); color: #fff; }
+    button.active { outline: 2px solid #86efac; background: #16a34a; color: #fff; }
+    input, select { padding: 10px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2); background: rgba(0,0,0,0.3); color: #fff; }
+    .chat-box { height: 210px; overflow-y: auto; background: rgba(0,0,0,0.28); border-radius: 10px; padding: 12px; margin: 10px 0; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+    .msg-bot { background: rgba(34,197,94,0.18); padding: 8px 12px; border-radius: 8px; align-self: flex-start; max-width: 85%; }
+    .msg-user { background: rgba(255,255,255,0.15); padding: 8px 12px; border-radius: 8px; align-self: flex-end; max-width: 85%; }
+    .chat-input { display: flex; gap: 8px; }
+    .chat-input input[type="text"] { flex: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">KU COLLEGE OF ENGINEERING AND TECHNOLOGY | Solar-Powered Off-Grid Monitoring &amp; Autonomous Irrigation</div>
+    <div class="hdr-right">
+      <span id="statusBadge" class="badge">OFFLINE (AVG)</span>
+      <a class="logout" href="/logout">Logout</a>
+    </div>
+  </header>
+
+  <div class="wrap">
+    <!-- 4 Primary Cards -->
+    <div class="grid-4">
+      <div class="card"><div class="lbl">Air Temperature</div><div class="val" id="temp">-- °C</div><div class="sub" id="dataMode">Waiting...</div></div>
+      <div class="card"><div class="lbl">Soil Temperature</div><div class="val" id="soil_temp">-- °C</div><div class="sub">DS18B20 Probe</div></div>
+      <div class="card"><div class="lbl">Air Humidity</div><div class="val" id="hum">-- %</div><div class="sub">DHT11 Sensor</div></div>
+      <div class="card"><div class="lbl">Soil Moisture</div><div class="val" id="soil">-- %</div><div class="sub">Capacitive Probe</div></div>
+    </div>
+
+    <!-- 3 Hazard Cards -->
+    <div class="grid-3">
+      <div class="card"><div class="lbl">Smoke / Gas (MQ-2)</div><div class="val" id="gas">-- PPM</div><div class="sub" id="gasSub">Normal (&lt;1800)</div></div>
+      <div class="card"><div class="lbl">Flame Sensor</div><div class="val" id="flame">SAFE</div><div class="sub">IR Optical Monitor</div></div>
+      <div class="card"><div class="lbl">Rain Sensor</div><div class="val" id="rain">NO</div><div class="sub">Auto-Pause Irrigation</div></div>
+    </div>
+
+    <div class="grid-2">
+      <!-- Pump & WhatsApp -->
+      <div class="card">
+        <div class="lbl">Pump Control &amp; Automatic WhatsApp Alerts</div>
+        <div class="val" id="pumpStatus" style="font-size:22px;">PUMP: OFF (AUTO)</div>
+        <div class="btn-row">
+          <button id="btnAUTO" onclick="setPump('AUTO')">AUTO</button>
+          <button id="btnON" class="sec" onclick="setPump('ON')">FORCE ON</button>
+          <button id="btnOFF" class="sec" onclick="setPump('OFF')">FORCE OFF</button>
+        </div>
+        <hr style="border-color:rgba(255,255,255,0.1); margin:16px 0;" />
+        <div class="lbl">Farmer WhatsApp Number (Auto-Warnings + Test)</div>
+        <div class="btn-row">
+          <input id="waPhone" type="text" value="{{ farmer_whatsapp }}" placeholder="+919876543210" style="flex:1;" />
+          <button onclick="sendWhatsAppTest()" style="background:#25D366; color:#fff;">📲 Send Live Field Update to WhatsApp</button>
+        </div>
+        <div class="sub" id="waResult" style="margin-top:8px;">2-Way Bot Commands: STATUS, PUMP ON, PUMP OFF, WEATHER, or send a crop leaf photo!</div>
+      </div>
+
+      <!-- Weather & Crop Disease CV -->
+      <div class="card">
+        <div class="lbl">Warangal Weather &amp; Crop Disease Detection</div>
+        <div class="sub" id="weatherBox" style="font-size:14px; margin:8px 0 14px;">Loading weather...</div>
+        <div class="btn-row">
+          <select id="cropSelect">
+            <option value="Auto" selected>Auto-Detect Crop</option>
+            <option value="Paddy">Paddy</option>
+            <option value="Cotton">Cotton</option>
+            <option value="Chilli">Chilli</option>
+          </select>
+          <input type="file" id="leafFile" accept="image/*" style="flex:1;" />
+          <button onclick="scanLeaf()">Analyze Leaf</button>
+        </div>
+        <div id="cropResult" class="sub" style="margin-top:10px; font-size:13px;"></div>
+      </div>
+    </div>
+
+    <!-- Krishi Mitra Chatbot -->
+    <div class="card">
+      <div class="lbl">Krishi Mitra AI Assistant (Live Telemetry + 📷 Leaf Scan)</div>
+      <div class="chat-box" id="chatBox">
+        <div class="msg-bot">Namaste! Ask me for live <b>status</b>, <b>weather</b>, <b>pump on/off/auto</b>, or click 📷 to upload a leaf photo.</div>
+      </div>
+      <div class="chat-input">
+        <input type="file" id="chatLeaf" accept="image/*" style="display:none;" onchange="chatScanLeaf()" />
+        <button class="sec" onclick="document.getElementById('chatLeaf').click()">📷</button>
+        <input type="text" id="chatText" placeholder="Type status, weather, pump on..." onkeydown="if(event.key==='Enter') sendChat()" />
+        <button onclick="sendChat()">Send</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function fetchLatest() {
+      try {
+        const r = await fetch('/api/latest');
+        const d = await r.json();
+        const badge = document.getElementById('statusBadge');
+        if (d.online) {
+          badge.className = 'badge online';
+          badge.textContent = 'ONLINE (' + (d.network || 'WiFi') + ')';
+          document.getElementById('dataMode').textContent = 'Live via ' + (d.network || 'WiFi');
+        } else {
+          badge.className = 'badge';
+          badge.textContent = 'OFFLINE (AVG)';
+          document.getElementById('dataMode').textContent = 'Historical Average';
+        }
+        document.getElementById('temp').textContent = d.temp + ' °C';
+        document.getElementById('soil_temp').textContent = d.soil_temp + ' °C';
+        document.getElementById('hum').textContent = d.hum + ' %';
+        document.getElementById('soil').textContent = d.soil + ' %';
+        document.getElementById('gas').textContent = d.gas + ' PPM';
+        document.getElementById('gasSub').textContent = d.gas > 1800 ? 'HIGH GAS WARNING!' : 'Normal (<1800)';
+        document.getElementById('flame').textContent = d.flame ? 'FIRE ALERT!' : 'SAFE';
+        document.getElementById('flame').className = d.flame ? 'val danger' : 'val';
+        document.getElementById('rain').textContent = d.rain ? 'RAINING' : 'NO';
+        document.getElementById('pumpStatus').textContent = 'PUMP: ' + (d.pump ? 'ON' : 'OFF') + ' (' + d.pump_mode + ')';
+        ['AUTO','ON','OFF'].forEach(m => {
+          document.getElementById('btn' + m).className = (d.pump_mode === m) ? 'active' : 'sec';
+        });
+      } catch (e) {}
+    }
+
+    async function setPump(mode) {
+      await fetch('/api/pump', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode}) });
+      fetchLatest();
+    }
+
+    async function loadWeather() {
+      const r = await fetch('/api/weather');
+      const w = await r.json();
+      document.getElementById('weatherBox').textContent = `Warangal: ${w.temp}°C | Wind: ${w.wind} km/h | Rain Chance: ${w.rain_prob}%`;
+    }
+
+    async function scanLeaf() {
+      const f = document.getElementById('leafFile').files[0];
+      if (!f) return alert('Select a leaf image first.');
+      const fd = new FormData();
+      fd.append('image', f);
+      fd.append('crop', document.getElementById('cropSelect').value);
+      document.getElementById('cropResult').textContent = 'Analyzing...';
+      const r = await fetch('/api/crop-check', { method:'POST', body:fd });
+      const d = await r.json();
+      document.getElementById('cropResult').textContent = `${d.crop}: ${d.status} (${d.lesion_pct}%) — ${d.advice}`;
+    }
+
+    async function sendWhatsAppTest() {
+      const phone = document.getElementById('waPhone').value.trim();
+      const r = await fetch('/api/whatsapp/test', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({phone}) });
+      const d = await r.json();
+      document.getElementById('waResult').textContent = d.message;
+    }
+
+    function addChat(txt, cls) {
+      const box = document.getElementById('chatBox');
+      const div = document.createElement('div');
+      div.className = cls;
+      div.textContent = txt;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function sendChat() {
+      const inp = document.getElementById('chatText');
+      const msg = inp.value.trim();
+      if (!msg) return;
+      addChat(msg, 'msg-user');
+      inp.value = '';
+      const r = await fetch('/api/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({message:msg}) });
+      const d = await r.json();
+      addChat(d.reply, 'msg-bot');
+    }
+
+    async function chatScanLeaf() {
+      const f = document.getElementById('chatLeaf').files[0];
+      if (!f) return;
+      addChat('📷 Uploaded leaf image for scan...', 'msg-user');
+      const fd = new FormData();
+      fd.append('image', f);
+      fd.append('crop', 'Auto');
+      const r = await fetch('/api/crop-check', { method:'POST', body:fd });
+      const d = await r.json();
+      addChat(`${d.crop}: ${d.status} (${d.lesion_pct}%) — ${d.advice}`, 'msg-bot');
+    }
+
+    fetchLatest();
+    loadWeather();
+    setInterval(fetchLatest, 3000);
+  </script>
+</body>
+</html>
