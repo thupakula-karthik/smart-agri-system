@@ -1,6 +1,8 @@
 import os
 import io
 import time
+import json
+import base64
 import sqlite3
 import datetime
 from xml.sax.saxutils import escape
@@ -57,7 +59,6 @@ def init_db():
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    # Auto-migrate any missing columns if an older DB exists
     for col, col_def in [
         ("gas", "INTEGER DEFAULT 120"),
         ("flame", "INTEGER DEFAULT 0"),
@@ -90,82 +91,83 @@ def init_db():
 
 init_db()
 
-# ---------------- PURE-PILLOW CROP & DISEASE CV ----------------
+# ---------------- GEMINI VISION + NORMALIZED PILLOW FALLBACK ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if api_key:
+        try:
+            b64 = base64.b64encode(image_bytes).decode("utf-8")
+            prompt = (
+                f"You are an expert agricultural plant pathologist helping Indian farmers. "
+                f"Analyze this crop leaf image (user hint: {crop_hint}). "
+                f"Return ONLY valid JSON with keys: "
+                f"crop (exact plant name e.g. Paddy/Rice, Cotton, Chilli, Tomato), "
+                f"status (exact disease name e.g. Healthy, Rice Blast, Brown Spot, Bacterial Leaf Blight), "
+                f"healthy (boolean true/false), "
+                f"lesion_pct (number 0-100 estimated affected area), "
+                f"advice (2 clear sentences of practical, safe treatment advice for the farmer)."
+            )
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
+                json={
+                    "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
+                    "generationConfig": {"response_mime_type": "application/json"}
+                },
+                timeout=15
+            )
+            if r.status_code == 200:
+                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                res = json.loads(txt)
+                return {
+                    "crop": str(res.get("crop", "Crop")),
+                    "status": str(res.get("status", "Analyzed")),
+                    "healthy": bool(res.get("healthy", True)),
+                    "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
+                    "advice": str(res.get("advice", ""))
+                }
+        except Exception:
+            pass
+
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img.thumbnail((320, 320))
     w, h = img.size
     px = img.load()
 
-    green_count = 0
-    lesion_count = 0
-    total_leaf = 0
-    crossings = 0
-
+    green_count = lesion_count = total_leaf = crossings = 0
     for y in range(h):
         in_green = False
-        row_cross = 0
         for x in range(w):
             r, g, b = px[x, y]
-            brightness = (r + g + b) / 3.0
+            br = (r + g + b) / 3.0
             is_green = (g > r * 1.04 and g > b * 1.04 and g > 42)
-            # Shadow-filtered lesion check (ignore dark soil/shadows < 55)
             is_lesion = (
-                brightness >= 55 and
-                not is_green and
+                br >= 55 and not is_green and
                 ((r > g * 1.08 and r > b * 1.15) or (r > 130 and g > 110 and b < 95))
             )
             if is_green:
                 green_count += 1
                 total_leaf += 1
                 if not in_green:
-                    row_cross += 1
+                    crossings += 1
                     in_green = True
             else:
-                if in_green:
-                    in_green = False
+                in_green = False
                 if is_lesion:
                     lesion_count += 1
                     total_leaf += 1
-        crossings += row_cross
 
-    v_cross = sum(1 for x in range(w) for y in range(1, h) if (px[x,y][1] > px[x,y][0]*1.04 and px[x,y][1] > px[x,y][2]*1.04 and px[x,y][1] > 42) and not (px[x,y-1][1] > px[x,y-1][0]*1.04 and px[x,y-1][1] > px[x,y-1][2]*1.04 and px[x,y-1][1] > 42))
-    avg_crossings = max(crossings / max(1, h), v_cross / max(1, w))
-    detected_crop = crop_hint if crop_hint != "Auto" else ("Paddy" if avg_crossings >= 5.5 else ("Cotton" if green_count > (w * h * 0.18) else "Chilli"))
+    norm_cross = (crossings / max(1, h)) * (320.0 / max(1, w))
+    detected_crop = crop_hint if crop_hint != "Auto" else ("Paddy" if norm_cross >= 5.5 else ("Cotton" if green_count > (w * h * 0.18) else "Chilli"))
     lesion_ratio = (lesion_count / max(1, total_leaf)) * 100.0
 
     if total_leaf < (w * h * 0.04):
-        return {
-            "crop": detected_crop,
-            "status": "Unclear Image",
-            "healthy": True,
-            "lesion_pct": 0.0,
-            "advice": "Please upload a clearer, well-lit close-up of the crop leaves."
-        }
+        return {"crop": detected_crop, "status": "Unclear Image", "healthy": True, "lesion_pct": 0.0, "advice": "Please upload a clearer, well-lit close-up of the crop leaves."}
     if lesion_ratio < 8.0:
-        return {
-            "crop": detected_crop,
-            "status": "Healthy",
-            "healthy": True,
-            "lesion_pct": round(lesion_ratio, 2),
-            "advice": f"{detected_crop} foliage looks healthy with minimal stress ({lesion_ratio:.1f}%)."
-        }
+        return {"crop": detected_crop, "status": "Healthy", "healthy": True, "lesion_pct": round(lesion_ratio, 2), "advice": f"{detected_crop} foliage looks healthy with minimal stress ({lesion_ratio:.1f}%)."}
     elif lesion_ratio < 22.0:
-        return {
-            "crop": detected_crop,
-            "status": "Early Leaf Spot / Nutrient Stress",
-            "healthy": False,
-            "lesion_pct": round(lesion_ratio, 2),
-            "advice": f"Early spotting detected on {detected_crop} ({lesion_ratio:.1f}%). Avoid overhead watering and inspect undersides for pests."
-        }
+        return {"crop": detected_crop, "status": "Early Leaf Spot / Nutrient Stress", "healthy": False, "lesion_pct": round(lesion_ratio, 2), "advice": f"Early spotting detected on {detected_crop} ({lesion_ratio:.1f}%). Avoid overhead watering and inspect undersides for pests."}
     else:
-        return {
-            "crop": detected_crop,
-            "status": "Severe Blight / Fungal Infection",
-            "healthy": False,
-            "lesion_pct": round(lesion_ratio, 2),
-            "advice": f"High lesion coverage on {detected_crop} ({lesion_ratio:.1f}%). Isolate affected plants and apply recommended copper/neem fungicide."
-        }
+        return {"crop": detected_crop, "status": "Severe Blight / Fungal Infection", "healthy": False, "lesion_pct": round(lesion_ratio, 2), "advice": f"High lesion coverage on {detected_crop} ({lesion_ratio:.1f}%). Isolate affected plants and apply recommended copper/neem fungicide."}
 
 # ---------------- WHATSAPP SENDER (TWILIO) ----------------
 def format_wa(num):
@@ -310,7 +312,6 @@ def receive_telemetry():
         conn.commit()
         conn.close()
 
-        # Automatic WhatsApp Hazard Warnings (300s cooldown)
         if flame == 1:
             send_auto_whatsapp("🔥 *FIRE ALERT!* Flame detected in field! Emergency pump check active.", alert_key="flame")
         if gas > 1800:
@@ -337,7 +338,6 @@ def get_latest():
         d["pump_mode"] = system_state["pump_mode"]
         return jsonify(d)
 
-    # Offline -> historical AVG fallback
     conn = get_db()
     cur = conn.cursor()
     cur.execute("SELECT AVG(temp) t, AVG(soil_temp) st, AVG(hum) h, AVG(soil) s, AVG(gas) g FROM telemetry")
