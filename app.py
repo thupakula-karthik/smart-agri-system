@@ -112,10 +112,10 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"advice (2 clear sentences of practical, safe treatment advice for the farmer)."
             )
             r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}",
                 json={
                     "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
-                    "generationConfig": {"response_mime_type": "application/json", "thinkingConfig": {"thinkingBudget": 0}}
+                    "generationConfig": {"response_mime_type": "application/json"}
                 },
                 timeout=12
             )
