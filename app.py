@@ -116,9 +116,9 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"advice (2 concise sentences: 1 visible symptom/hand check to confirm + 1 exact ICAR/TNAU treatment matching bacterial vs fungal; never give houseplant watering advice)."
             )
             models = (
-                "gemini-3.6-flash",
-                "gemini-3.8-flash",
                 "gemini-3.5-flash-lite",
+                "gemma-4-31b-it",
+                "gemini-3.8-flash",
                 "gemma-4-31b-it",
                 "gemma-4-12b-it"
             )
