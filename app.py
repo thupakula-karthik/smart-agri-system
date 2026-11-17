@@ -97,7 +97,7 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     if api_key:
         try:
             fast_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            fast_img.thumbnail((1024, 1024))
+            fast_img.thumbnail((800, 800))
             buf = io.BytesIO()
             fast_img.save(buf, format="JPEG", quality=92)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
@@ -117,10 +117,9 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"advice (2 concise sentences: 1 physical hand/water-ooze check + 1 exact ICAR/TNAU treatment)."
             )
             models = (
-                "gemma-4-31b-it",
-                "gemini-3.8-flash",
                 "gemini-3.5-flash-lite",
-                "gemma-4-12b-it"
+                "gemma-4-12b-it",
+                "gemini-3.8-flash"
             )
             for model_id in models:
                 try:
@@ -133,7 +132,7 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                     r = requests.post(
                         f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
                         json=payload,
-                        timeout=12
+                        timeout=5
                     )
                     if r.status_code == 200:
                         txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
