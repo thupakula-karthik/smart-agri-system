@@ -91,7 +91,7 @@ def init_db():
 
 init_db()
 
-# ---------------- HIGH-RES GEMINI / GEMMA VISION ----------------
+# ---------------- HIGH-RES GEMMA/GEMINI VISION WITH CoT ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
@@ -102,24 +102,24 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
             fast_img.save(buf, format="JPEG", quality=92)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
-                f"You are an expert Indian agricultural plant pathologist (ICAR/TNAU/IRRI standards) advising farmers. "
-                f"Carefully inspect lesion shape, borders, halos, leaves, panicles, and stems (user hint: {crop_hint}). "
-                f"CRITICAL DIFFERENTIAL CHECKS: "
-                f"(1) Bacterial Leaf Spot (Xanthomonas: small dark, greasy/water-soaked, angular spots often with yellow halos -> treat with Copper Oxychloride 2.5g/L, NOT fungicide) "
-                f"vs Cercospora Frogeye Spot (distinctly circular dry spots with light grey centers and dark brown borders -> Mancozeb 75% WP 2.5g/L). "
-                f"(2) Paddy Bacterial Panicle Blight / Bacterial Leaf Blight / Stem Borer Whiteheads vs Fungal Rice Blast / Brown Spot. "
-                f"Return ONLY valid JSON with keys: "
-                f"crop (exact crop name e.g. Chilli, Paddy/Rice, Cotton, Tomato), "
+                f"You are an expert Indian agricultural plant pathologist (ICAR/TNAU/IRRI standards). "
+                f"Examine this crop photo carefully (user hint: {crop_hint}). "
+                f"First describe the exact visual features you see, THEN diagnose accurately. "
+                f"RULES: "
+                f"(1) On Chilli/Pepper/Tomato: dark, greasy/water-soaked, irregular or angular lesions, necrotic tearing, yellow halos, or leaf-margin blight = Bacterial Leaf Spot (Xanthomonas campestris pv. vesicatoria) -> treat with Copper Oxychloride 2.5g/L (NOT Mancozeb). Only diagnose Cercospora if spots are strictly uniform circular frogeye rings with clean pale-grey dry centers. "
+                f"(2) On Paddy: distinguish Bacterial Panicle Blight, Bacterial Leaf Blight, Stem Borer Whiteheads, Rice Blast, and Brown Spot. "
+                f"Return ONLY valid JSON with keys IN THIS EXACT ORDER: "
+                f"visual_observation (1 short sentence of exact spot shape, margin, and color seen), "
+                f"crop (exact crop name), "
                 f"status (exact disease/pest name or Healthy), "
                 f"healthy (boolean true/false), "
-                f"lesion_pct (number 0-100 estimated affected area), "
-                f"advice (2 concise sentences: 1 visible symptom/hand check to confirm + 1 exact ICAR/TNAU treatment matching bacterial vs fungal; never give houseplant watering advice)."
+                f"lesion_pct (number 0-100), "
+                f"advice (2 concise sentences: 1 physical hand/water-ooze check + 1 exact ICAR/TNAU treatment)."
             )
             models = (
-                "gemini-3.5-flash-lite",
                 "gemma-4-31b-it",
                 "gemini-3.8-flash",
-                "gemma-4-31b-it",
+                "gemini-3.5-flash-lite",
                 "gemma-4-12b-it"
             )
             for model_id in models:
@@ -133,7 +133,7 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                     r = requests.post(
                         f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
                         json=payload,
-                        timeout=10
+                        timeout=12
                     )
                     if r.status_code == 200:
                         txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
