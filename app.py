@@ -5,6 +5,7 @@ import json
 import base64
 import sqlite3
 import datetime
+import threading
 from xml.sax.saxutils import escape
 import requests
 from PIL import Image
@@ -91,20 +92,20 @@ def init_db():
 
 init_db()
 
-# ---------------- GEMINI VISION + SAFE FARMER FALLBACK ----------------
+# ---------------- GEMINI + GEMMA VISION (PATIENT & ACCURATE) ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
         try:
             fast_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            fast_img.thumbnail((640, 640))
+            fast_img.thumbnail((800, 800))
             buf = io.BytesIO()
-            fast_img.save(buf, format="JPEG", quality=85)
+            fast_img.save(buf, format="JPEG", quality=88)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
                 f"You are an expert Indian agricultural plant pathologist (ICAR/IRRI standards) helping farmers. "
                 f"Carefully inspect BOTH leaves AND grain panicles/stems/fruits in this photo (user hint: {crop_hint}). "
-                f"Distinguish between healthy foliage, Bacterial Panicle Blight, Bacterial Leaf Blight, Rice Stem Borer (Whiteheads), Rice Blast, Brown Spot, Cotton Leaf Curl, Chilli Anthracnose, etc. "
+                f"Distinguish accurately between Healthy foliage, Bacterial Panicle Blight, Bacterial Leaf Blight, Rice Stem Borer (Whiteheads), Rice Blast, Brown Spot, Cotton Leaf Curl, Chilli Anthracnose, etc. "
                 f"Return ONLY valid JSON with keys: "
                 f"crop (exact crop name e.g. Paddy/Rice, Cotton, Chilli, Tomato), "
                 f"status (exact disease/pest name or Healthy), "
@@ -116,66 +117,53 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 "gemini-3.8-flash",
                 "gemini-3.6-flash",
                 "gemini-3.5-flash-lite",
-                "gemini-3.1-flash-lite",
-                "gemini-2.0-flash"
+                "gemma-4-31b-it",
+                "gemma-4-12b-it"
             )
-            for model_id in models:
-                r = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
-                    json={
-                        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
-                        "generationConfig": {"response_mime_type": "application/json"}
-                    },
-                    timeout=4
-                )
-                if r.status_code == 200:
-                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                    res = json.loads(txt)
-                    if isinstance(res, list):
-                        res = res[0]
-                    return {
-                        "crop": str(res.get("crop", "Crop")),
-                        "status": str(res.get("status", "Analyzed")),
-                        "healthy": bool(res.get("healthy", True)),
-                        "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
-                        "advice": str(res.get("advice", ""))
+            for attempt in range(2):
+                for model_id in models:
+                    is_gemma = model_id.startswith("gemma-")
+                    payload = {
+                        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}]
                     }
-                else:
-                    print(f"Gemini {model_id} error:", r.status_code, r.text[:160], flush=True)
+                    if not is_gemma:
+                        payload["generationConfig"] = {"response_mime_type": "application/json"}
+
+                    r = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
+                        json=payload,
+                        timeout=25
+                    )
+                    if r.status_code == 200:
+                        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        if txt.startswith("```"):
+                            txt = txt.split("```")[1]
+                            if txt.startswith("json"):
+                                txt = txt[4:].strip()
+                        res = json.loads(txt)
+                        if isinstance(res, list):
+                            res = res[0]
+                        return {
+                            "crop": str(res.get("crop", "Crop")),
+                            "status": str(res.get("status", "Analyzed")),
+                            "healthy": bool(res.get("healthy", True)),
+                            "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
+                            "advice": str(res.get("advice", ""))
+                        }
+                    else:
+                        print(f"Model {model_id} error:", r.status_code, r.text[:160], flush=True)
+                time.sleep(2)
         except Exception as e:
-            print("Gemini Vision exception:", str(e), flush=True)
+            print("Vision exception:", str(e), flush=True)
     else:
         print("GEMINI_API_KEY is empty in Render env!", flush=True)
 
-    # Honest fallback when AI servers are temporarily busy (never gives wrong houseplant advice)
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img.thumbnail((320, 320))
-    w, h = img.size
-    px = img.load()
-    green_count = lesion_count = total_leaf = crossings = 0
-    for y in range(h):
-        in_green = False
-        for x in range(w):
-            r, g, b = px[x, y]
-            br = (r + g + b) / 3.0
-            is_green = (g > r * 1.04 and g > b * 1.04 and g > 42)
-            is_lesion = (br >= 55 and not is_green and ((r > g * 1.08 and r > b * 1.15) or (r > 130 and g > 110 and b < 95)))
-            if is_green:
-                green_count += 1; total_leaf += 1
-                if not in_green: crossings += 1; in_green = True
-            else:
-                in_green = False
-                if is_lesion: lesion_count += 1; total_leaf += 1
-
-    norm_cross = (crossings / max(1, h)) * (320.0 / max(1, w))
-    detected_crop = crop_hint if crop_hint != "Auto" else ("Paddy" if norm_cross >= 5.5 else ("Cotton" if green_count > (w * h * 0.18) else "Chilli"))
-    lesion_ratio = round((lesion_count / max(1, total_leaf)) * 100.0, 1)
     return {
-        "crop": f"{detected_crop} (AI Busy - Color Check)",
-        "status": "Discoloration Detected" if lesion_ratio >= 8.0 else "Mostly Green",
-        "healthy": lesion_ratio < 8.0,
-        "lesion_pct": lesion_ratio,
-        "advice": "AI Vision servers were temporarily busy. Please resend this photo in 10 seconds for exact disease identification."
+        "crop": crop_hint if crop_hint != "Auto" else "Crop",
+        "status": "Analysis Unavailable",
+        "healthy": True,
+        "lesion_pct": 0.0,
+        "advice": "Unable to reach AI Vision service right now. Please try sending the photo again in a minute."
     }
 
 # ---------------- WHATSAPP SENDER (TWILIO) ----------------
@@ -432,6 +420,15 @@ def whatsapp_test():
     ok, info = send_auto_whatsapp(build_status_text(), to_number=phone)
     return jsonify({"status": "success" if ok else "error", "message": "Sent to WhatsApp!" if ok else info})
 
+def process_whatsapp_image_async(media_url, sender, sid, token):
+    try:
+        r = requests.get(media_url, auth=(sid, token), timeout=20)
+        res = identify_crop_and_pathology(r.content, "Auto")
+        msg = f"🌿 *Leaf Scan ({res['crop']})*\nResult: *{res['status']}* ({res['lesion_pct']}%)\nAdvice: {res['advice']}"
+    except Exception as e:
+        msg = f"Could not analyze leaf photo: {e}"
+    send_auto_whatsapp(msg, to_number=sender)
+
 @app.route("/api/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     body = (request.form.get("Body") or "").strip()
@@ -445,12 +442,12 @@ def whatsapp_webhook():
         media_url = request.form.get("MediaUrl0")
         sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
         token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
-        try:
-            r = requests.get(media_url, auth=(sid, token), timeout=10)
-            res = identify_crop_and_pathology(r.content, "Auto")
-            reply = f"🌿 *Leaf Scan ({res['crop']})*\nResult: *{res['status']}* ({res['lesion_pct']}%)\nAdvice: {res['advice']}"
-        except Exception as e:
-            reply = f"Could not analyze leaf photo: {e}"
+        threading.Thread(
+            target=process_whatsapp_image_async,
+            args=(media_url, sender, sid, token),
+            daemon=True
+        ).start()
+        reply = "🔍 Analyzing your crop photo accurately—your diagnosis will arrive in a few seconds..."
     elif lower in ("hi", "hello", "hey", "menu", "start"):
         reply = build_status_text() + "\n\n*Commands:* STATUS | PUMP ON | PUMP OFF | PUMP AUTO | WEATHER | or send a leaf photo!"
     elif "status" in lower:
