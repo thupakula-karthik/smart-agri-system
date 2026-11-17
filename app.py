@@ -113,10 +113,10 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"advice (2 concise sentences: 1 quick field check the farmer can do by hand + 1 field-appropriate treatment/action; never give houseplant watering advice for field crops)."
             )
             models = (
-                "gemini-3.6-flash",
-                "gemma-4-31b-it",
                 "gemini-3.5-flash-lite",
                 "gemma-4-12b-it",
+                "gemini-3.6-flash",
+                "gemma-4-31b-it",
                 "gemini-3.8-flash"
             )
             for model_id in models:
@@ -129,7 +129,7 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
                     json=payload,
-                    timeout=5
+                    timeout=10
                 )
                 if r.status_code == 200:
                     txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
