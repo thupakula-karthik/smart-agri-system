@@ -5,7 +5,6 @@ import json
 import base64
 import sqlite3
 import datetime
-import threading
 from xml.sax.saxutils import escape
 import requests
 from PIL import Image
@@ -92,15 +91,15 @@ def init_db():
 
 init_db()
 
-# ---------------- GEMINI + GEMMA VISION (PATIENT & ACCURATE) ----------------
+# ---------------- GEMINI / GEMMA VISION (FAST DIRECT TWIML) ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
         try:
             fast_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            fast_img.thumbnail((800, 800))
+            fast_img.thumbnail((640, 640))
             buf = io.BytesIO()
-            fast_img.save(buf, format="JPEG", quality=88)
+            fast_img.save(buf, format="JPEG", quality=85)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
                 f"You are an expert Indian agricultural plant pathologist (ICAR/IRRI standards) helping farmers. "
@@ -114,45 +113,42 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"advice (2 concise sentences: 1 quick field check the farmer can do by hand + 1 field-appropriate treatment/action; never give houseplant watering advice for field crops)."
             )
             models = (
-                "gemini-3.8-flash",
                 "gemini-3.6-flash",
-                "gemini-3.5-flash-lite",
                 "gemma-4-31b-it",
-                "gemma-4-12b-it"
+                "gemini-3.5-flash-lite",
+                "gemma-4-12b-it",
+                "gemini-3.8-flash"
             )
-            for attempt in range(2):
-                for model_id in models:
-                    is_gemma = model_id.startswith("gemma-")
-                    payload = {
-                        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}]
-                    }
-                    if not is_gemma:
-                        payload["generationConfig"] = {"response_mime_type": "application/json"}
+            for model_id in models:
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}]
+                }
+                if not model_id.startswith("gemma-"):
+                    payload["generationConfig"] = {"response_mime_type": "application/json"}
 
-                    r = requests.post(
-                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
-                        json=payload,
-                        timeout=25
-                    )
-                    if r.status_code == 200:
-                        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        if txt.startswith("```"):
-                            txt = txt.split("```")[1]
-                            if txt.startswith("json"):
-                                txt = txt[4:].strip()
-                        res = json.loads(txt)
-                        if isinstance(res, list):
-                            res = res[0]
-                        return {
-                            "crop": str(res.get("crop", "Crop")),
-                            "status": str(res.get("status", "Analyzed")),
-                            "healthy": bool(res.get("healthy", True)),
-                            "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
-                            "advice": str(res.get("advice", ""))
-                        }
-                    else:
-                        print(f"Model {model_id} error:", r.status_code, r.text[:160], flush=True)
-                time.sleep(2)
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
+                    json=payload,
+                    timeout=5
+                )
+                if r.status_code == 200:
+                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    if "```" in txt:
+                        txt = txt.split("```")[1]
+                        if txt.startswith("json"):
+                            txt = txt[4:].strip()
+                    res = json.loads(txt)
+                    if isinstance(res, list):
+                        res = res[0]
+                    return {
+                        "crop": str(res.get("crop", "Crop")),
+                        "status": str(res.get("status", "Analyzed")),
+                        "healthy": bool(res.get("healthy", True)),
+                        "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
+                        "advice": str(res.get("advice", ""))
+                    }
+                else:
+                    print(f"Model {model_id} error:", r.status_code, r.text[:160], flush=True)
         except Exception as e:
             print("Vision exception:", str(e), flush=True)
     else:
@@ -163,7 +159,7 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
         "status": "Analysis Unavailable",
         "healthy": True,
         "lesion_pct": 0.0,
-        "advice": "Unable to reach AI Vision service right now. Please try sending the photo again in a minute."
+        "advice": "AI Vision servers are currently busy. Please resend this photo in a few seconds."
     }
 
 # ---------------- WHATSAPP SENDER (TWILIO) ----------------
@@ -420,15 +416,6 @@ def whatsapp_test():
     ok, info = send_auto_whatsapp(build_status_text(), to_number=phone)
     return jsonify({"status": "success" if ok else "error", "message": "Sent to WhatsApp!" if ok else info})
 
-def process_whatsapp_image_async(media_url, sender, sid, token):
-    try:
-        r = requests.get(media_url, auth=(sid, token), timeout=20)
-        res = identify_crop_and_pathology(r.content, "Auto")
-        msg = f"🌿 *Leaf Scan ({res['crop']})*\nResult: *{res['status']}* ({res['lesion_pct']}%)\nAdvice: {res['advice']}"
-    except Exception as e:
-        msg = f"Could not analyze leaf photo: {e}"
-    send_auto_whatsapp(msg, to_number=sender)
-
 @app.route("/api/whatsapp", methods=["POST"])
 def whatsapp_webhook():
     body = (request.form.get("Body") or "").strip()
@@ -442,12 +429,12 @@ def whatsapp_webhook():
         media_url = request.form.get("MediaUrl0")
         sid = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
         token = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
-        threading.Thread(
-            target=process_whatsapp_image_async,
-            args=(media_url, sender, sid, token),
-            daemon=True
-        ).start()
-        reply = "🔍 Analyzing your crop photo accurately—your diagnosis will arrive in a few seconds..."
+        try:
+            r = requests.get(media_url, auth=(sid, token), timeout=8)
+            res = identify_crop_and_pathology(r.content, "Auto")
+            reply = f"🌿 *Leaf Scan ({res['crop']})*\nResult: *{res['status']}* ({res['lesion_pct']}%)\nAdvice: {res['advice']}"
+        except Exception as e:
+            reply = f"Could not analyze leaf photo: {e}"
     elif lower in ("hi", "hello", "hey", "menu", "start"):
         reply = build_status_text() + "\n\n*Commands:* STATUS | PUMP ON | PUMP OFF | PUMP AUTO | WEATHER | or send a leaf photo!"
     elif "status" in lower:
