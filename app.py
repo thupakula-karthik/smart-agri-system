@@ -91,66 +91,72 @@ def init_db():
 
 init_db()
 
-# ---------------- GEMINI / GEMMA VISION (FAST DIRECT TWIML) ----------------
+# ---------------- HIGH-RES GEMINI / GEMMA VISION ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
         try:
             fast_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-            fast_img.thumbnail((640, 640))
+            fast_img.thumbnail((1024, 1024))
             buf = io.BytesIO()
-            fast_img.save(buf, format="JPEG", quality=85)
+            fast_img.save(buf, format="JPEG", quality=92)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
-                f"You are an expert Indian agricultural plant pathologist (ICAR/IRRI standards) helping farmers. "
-                f"Carefully inspect BOTH leaves AND grain panicles/stems/fruits in this photo (user hint: {crop_hint}). "
-                f"Distinguish accurately between Healthy foliage, Bacterial Panicle Blight, Bacterial Leaf Blight, Rice Stem Borer (Whiteheads), Rice Blast, Brown Spot, Cotton Leaf Curl, Chilli Anthracnose, etc. "
+                f"You are an expert Indian agricultural plant pathologist (ICAR/TNAU/IRRI standards) advising farmers. "
+                f"Carefully inspect lesion shape, borders, halos, leaves, panicles, and stems (user hint: {crop_hint}). "
+                f"CRITICAL DIFFERENTIAL CHECKS: "
+                f"(1) Bacterial Leaf Spot (Xanthomonas: small dark, greasy/water-soaked, angular spots often with yellow halos -> treat with Copper Oxychloride 2.5g/L, NOT fungicide) "
+                f"vs Cercospora Frogeye Spot (distinctly circular dry spots with light grey centers and dark brown borders -> Mancozeb 75% WP 2.5g/L). "
+                f"(2) Paddy Bacterial Panicle Blight / Bacterial Leaf Blight / Stem Borer Whiteheads vs Fungal Rice Blast / Brown Spot. "
                 f"Return ONLY valid JSON with keys: "
-                f"crop (exact crop name e.g. Paddy/Rice, Cotton, Chilli, Tomato), "
+                f"crop (exact crop name e.g. Chilli, Paddy/Rice, Cotton, Tomato), "
                 f"status (exact disease/pest name or Healthy), "
                 f"healthy (boolean true/false), "
                 f"lesion_pct (number 0-100 estimated affected area), "
-                f"advice (2 concise sentences: 1 quick field check the farmer can do by hand + 1 field-appropriate treatment/action; never give houseplant watering advice for field crops)."
+                f"advice (2 concise sentences: 1 visible symptom/hand check to confirm + 1 exact ICAR/TNAU treatment matching bacterial vs fungal; never give houseplant watering advice)."
             )
             models = (
-                "gemini-3.5-flash-lite",
-                "gemma-4-12b-it",
                 "gemini-3.6-flash",
+                "gemini-3.8-flash",
+                "gemini-3.5-flash-lite",
                 "gemma-4-31b-it",
-                "gemini-3.8-flash"
+                "gemma-4-12b-it"
             )
             for model_id in models:
-                payload = {
-                    "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}]
-                }
-                if not model_id.startswith("gemma-"):
-                    payload["generationConfig"] = {"response_mime_type": "application/json"}
-
-                r = requests.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
-                    json=payload,
-                    timeout=10
-                )
-                if r.status_code == 200:
-                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    if "```" in txt:
-                        txt = txt.split("```")[1]
-                        if txt.startswith("json"):
-                            txt = txt[4:].strip()
-                    res = json.loads(txt)
-                    if isinstance(res, list):
-                        res = res[0]
-                    return {
-                        "crop": str(res.get("crop", "Crop")),
-                        "status": str(res.get("status", "Analyzed")),
-                        "healthy": bool(res.get("healthy", True)),
-                        "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
-                        "advice": str(res.get("advice", ""))
+                try:
+                    payload = {
+                        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}]
                     }
-                else:
-                    print(f"Model {model_id} error:", r.status_code, r.text[:160], flush=True)
+                    if not model_id.startswith("gemma-"):
+                        payload["generationConfig"] = {"response_mime_type": "application/json"}
+
+                    r = requests.post(
+                        f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
+                        json=payload,
+                        timeout=10
+                    )
+                    if r.status_code == 200:
+                        txt = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        if "```" in txt:
+                            txt = txt.split("```")[1]
+                            if txt.startswith("json"):
+                                txt = txt[4:].strip()
+                        res = json.loads(txt)
+                        if isinstance(res, list):
+                            res = res[0]
+                        return {
+                            "crop": str(res.get("crop", "Crop")),
+                            "status": str(res.get("status", "Analyzed")),
+                            "healthy": bool(res.get("healthy", True)),
+                            "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
+                            "advice": str(res.get("advice", ""))
+                        }
+                    else:
+                        print(f"Model {model_id} error:", r.status_code, r.text[:160], flush=True)
+                except Exception as me:
+                    print(f"Model {model_id} exception:", str(me), flush=True)
         except Exception as e:
-            print("Vision exception:", str(e), flush=True)
+            print("Image prep exception:", str(e), flush=True)
     else:
         print("GEMINI_API_KEY is empty in Render env!", flush=True)
 
