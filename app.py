@@ -91,7 +91,7 @@ def init_db():
 
 init_db()
 
-# ---------------- GEMINI VISION + NORMALIZED PILLOW FALLBACK ----------------
+# ---------------- GEMINI VISION + SAFE FARMER FALLBACK ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
@@ -102,23 +102,31 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
             fast_img.save(buf, format="JPEG", quality=85)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
-                f"You are an expert agricultural plant pathologist helping Indian farmers. "
-                f"Analyze this crop leaf image (user hint: {crop_hint}). "
+                f"You are an expert Indian agricultural plant pathologist (ICAR/IRRI standards) helping farmers. "
+                f"Carefully inspect BOTH leaves AND grain panicles/stems/fruits in this photo (user hint: {crop_hint}). "
+                f"Distinguish between healthy foliage, Bacterial Panicle Blight, Bacterial Leaf Blight, Rice Stem Borer (Whiteheads), Rice Blast, Brown Spot, Cotton Leaf Curl, Chilli Anthracnose, etc. "
                 f"Return ONLY valid JSON with keys: "
-                f"crop (exact plant name e.g. Paddy/Rice, Cotton, Chilli, Tomato), "
-                f"status (exact disease name e.g. Healthy, Rice Blast, Brown Spot, Bacterial Leaf Blight), "
+                f"crop (exact crop name e.g. Paddy/Rice, Cotton, Chilli, Tomato), "
+                f"status (exact disease/pest name or Healthy), "
                 f"healthy (boolean true/false), "
                 f"lesion_pct (number 0-100 estimated affected area), "
-                f"advice (2 clear sentences of practical, safe treatment advice for the farmer)."
+                f"advice (2 concise sentences: 1 quick field check the farmer can do by hand + 1 field-appropriate treatment/action; never give houseplant watering advice for field crops)."
             )
-            for model_id in ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"):
+            models = (
+                "gemini-3.8-flash",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-2.0-flash"
+            )
+            for model_id in models:
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
                     json={
                         "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
                         "generationConfig": {"response_mime_type": "application/json"}
                     },
-                    timeout=12
+                    timeout=4
                 )
                 if r.status_code == 200:
                     txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
@@ -133,17 +141,17 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                         "advice": str(res.get("advice", ""))
                     }
                 else:
-                    print(f"Gemini {model_id} error:", r.status_code, r.text[:200], flush=True)
+                    print(f"Gemini {model_id} error:", r.status_code, r.text[:160], flush=True)
         except Exception as e:
             print("Gemini Vision exception:", str(e), flush=True)
     else:
         print("GEMINI_API_KEY is empty in Render env!", flush=True)
 
+    # Honest fallback when AI servers are temporarily busy (never gives wrong houseplant advice)
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img.thumbnail((320, 320))
     w, h = img.size
     px = img.load()
-
     green_count = lesion_count = total_leaf = crossings = 0
     for y in range(h):
         in_green = False
@@ -151,34 +159,24 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
             r, g, b = px[x, y]
             br = (r + g + b) / 3.0
             is_green = (g > r * 1.04 and g > b * 1.04 and g > 42)
-            is_lesion = (
-                br >= 55 and not is_green and
-                ((r > g * 1.08 and r > b * 1.15) or (r > 130 and g > 110 and b < 95))
-            )
+            is_lesion = (br >= 55 and not is_green and ((r > g * 1.08 and r > b * 1.15) or (r > 130 and g > 110 and b < 95)))
             if is_green:
-                green_count += 1
-                total_leaf += 1
-                if not in_green:
-                    crossings += 1
-                    in_green = True
+                green_count += 1; total_leaf += 1
+                if not in_green: crossings += 1; in_green = True
             else:
                 in_green = False
-                if is_lesion:
-                    lesion_count += 1
-                    total_leaf += 1
+                if is_lesion: lesion_count += 1; total_leaf += 1
 
     norm_cross = (crossings / max(1, h)) * (320.0 / max(1, w))
     detected_crop = crop_hint if crop_hint != "Auto" else ("Paddy" if norm_cross >= 5.5 else ("Cotton" if green_count > (w * h * 0.18) else "Chilli"))
-    lesion_ratio = (lesion_count / max(1, total_leaf)) * 100.0
-
-    if total_leaf < (w * h * 0.04):
-        return {"crop": detected_crop, "status": "Unclear Image", "healthy": True, "lesion_pct": 0.0, "advice": "Please upload a clearer, well-lit close-up of the crop leaves."}
-    if lesion_ratio < 8.0:
-        return {"crop": detected_crop, "status": "Healthy", "healthy": True, "lesion_pct": round(lesion_ratio, 2), "advice": f"{detected_crop} foliage looks healthy with minimal stress ({lesion_ratio:.1f}%)."}
-    elif lesion_ratio < 22.0:
-        return {"crop": detected_crop, "status": "Early Leaf Spot / Nutrient Stress", "healthy": False, "lesion_pct": round(lesion_ratio, 2), "advice": f"Early spotting detected on {detected_crop} ({lesion_ratio:.1f}%). Avoid overhead watering and inspect undersides for pests."}
-    else:
-        return {"crop": detected_crop, "status": "Severe Blight / Fungal Infection", "healthy": False, "lesion_pct": round(lesion_ratio, 2), "advice": f"High lesion coverage on {detected_crop} ({lesion_ratio:.1f}%). Isolate affected plants and apply recommended copper/neem fungicide."}
+    lesion_ratio = round((lesion_count / max(1, total_leaf)) * 100.0, 1)
+    return {
+        "crop": f"{detected_crop} (AI Busy - Color Check)",
+        "status": "Discoloration Detected" if lesion_ratio >= 8.0 else "Mostly Green",
+        "healthy": lesion_ratio < 8.0,
+        "lesion_pct": lesion_ratio,
+        "advice": "AI Vision servers were temporarily busy. Please resend this photo in 10 seconds for exact disease identification."
+    }
 
 # ---------------- WHATSAPP SENDER (TWILIO) ----------------
 def format_wa(num):
