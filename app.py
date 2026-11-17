@@ -93,7 +93,7 @@ init_db()
 # ---------------- PURE-PILLOW CROP & DISEASE CV ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img.thumbnail((240, 240))
+    img.thumbnail((320, 320))
     w, h = img.size
     px = img.load()
 
@@ -129,8 +129,9 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                     total_leaf += 1
         crossings += row_cross
 
-    avg_crossings = crossings / max(1, h)
-    detected_crop = crop_hint if crop_hint != "Auto" else ("Paddy" if avg_crossings >= 24.0 else ("Cotton" if green_count > (w * h * 0.18) else "Chilli"))
+    v_cross = sum(1 for x in range(w) for y in range(1, h) if (px[x,y][1] > px[x,y][0]*1.04 and px[x,y][1] > px[x,y][2]*1.04 and px[x,y][1] > 42) and not (px[x,y-1][1] > px[x,y-1][0]*1.04 and px[x,y-1][1] > px[x,y-1][2]*1.04 and px[x,y-1][1] > 42))
+    avg_crossings = max(crossings / max(1, h), v_cross / max(1, w))
+    detected_crop = crop_hint if crop_hint != "Auto" else ("Paddy" if avg_crossings >= 5.5 else ("Cotton" if green_count > (w * h * 0.18) else "Chilli"))
     lesion_ratio = (lesion_count / max(1, total_leaf)) * 100.0
 
     if total_leaf < (w * h * 0.04):
