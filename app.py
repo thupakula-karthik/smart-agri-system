@@ -91,12 +91,16 @@ def init_db():
 
 init_db()
 
-# ---------------- GEMINI VISION + NORMALIZED PILLOW FALLBACK ----------------
+# ---------------- FAST GEMINI VISION + NORMALIZED PILLOW FALLBACK ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
         try:
-            b64 = base64.b64encode(image_bytes).decode("utf-8")
+            fast_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            fast_img.thumbnail((640, 640))
+            buf = io.BytesIO()
+            fast_img.save(buf, format="JPEG", quality=85)
+            b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
                 f"You are an expert agricultural plant pathologist helping Indian farmers. "
                 f"Analyze this crop leaf image (user hint: {crop_hint}). "
@@ -111,13 +115,15 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}",
                 json={
                     "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
-                    "generationConfig": {"response_mime_type": "application/json"}
+                    "generationConfig": {"response_mime_type": "application/json", "thinkingConfig": {"thinkingBudget": 0}}
                 },
-                timeout=15
+                timeout=12
             )
             if r.status_code == 200:
                 txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                 res = json.loads(txt)
+                if isinstance(res, list):
+                    res = res[0]
                 return {
                     "crop": str(res.get("crop", "Crop")),
                     "status": str(res.get("status", "Analyzed")),
@@ -125,8 +131,12 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                     "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
                     "advice": str(res.get("advice", ""))
                 }
-        except Exception:
-            pass
+            else:
+                print("Gemini API error:", r.status_code, r.text[:200], flush=True)
+        except Exception as e:
+            print("Gemini Vision exception:", str(e), flush=True)
+    else:
+        print("GEMINI_API_KEY is empty in Render env!", flush=True)
 
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img.thumbnail((320, 320))
