@@ -111,7 +111,7 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"lesion_pct (number 0-100 estimated affected area), "
                 f"advice (2 clear sentences of practical, safe treatment advice for the farmer)."
             )
-            for model_id in ("gemini-3.8-flash", "gemini-3.5-flash-lite"):
+            for model_id in ("gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"):
                 r = requests.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
                     json={
