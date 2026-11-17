@@ -91,7 +91,7 @@ def init_db():
 
 init_db()
 
-# ---------------- FAST GEMINI VISION + NORMALIZED PILLOW FALLBACK ----------------
+# ---------------- GEMINI VISION + NORMALIZED PILLOW FALLBACK ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
@@ -111,28 +111,29 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                 f"lesion_pct (number 0-100 estimated affected area), "
                 f"advice (2 clear sentences of practical, safe treatment advice for the farmer)."
             )
-            r = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}",
-                json={
-                    "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
-                    "generationConfig": {"response_mime_type": "application/json"}
-                },
-                timeout=12
-            )
-            if r.status_code == 200:
-                txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                res = json.loads(txt)
-                if isinstance(res, list):
-                    res = res[0]
-                return {
-                    "crop": str(res.get("crop", "Crop")),
-                    "status": str(res.get("status", "Analyzed")),
-                    "healthy": bool(res.get("healthy", True)),
-                    "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
-                    "advice": str(res.get("advice", ""))
-                }
-            else:
-                print("Gemini API error:", r.status_code, r.text[:200], flush=True)
+            for model_id in ("gemini-3.8-flash", "gemini-3.5-flash-lite"):
+                r = requests.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
+                    json={
+                        "contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": b64}}]}],
+                        "generationConfig": {"response_mime_type": "application/json"}
+                    },
+                    timeout=12
+                )
+                if r.status_code == 200:
+                    txt = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    res = json.loads(txt)
+                    if isinstance(res, list):
+                        res = res[0]
+                    return {
+                        "crop": str(res.get("crop", "Crop")),
+                        "status": str(res.get("status", "Analyzed")),
+                        "healthy": bool(res.get("healthy", True)),
+                        "lesion_pct": round(float(res.get("lesion_pct", 0)), 1),
+                        "advice": str(res.get("advice", ""))
+                    }
+                else:
+                    print(f"Gemini {model_id} error:", r.status_code, r.text[:200], flush=True)
         except Exception as e:
             print("Gemini Vision exception:", str(e), flush=True)
     else:
