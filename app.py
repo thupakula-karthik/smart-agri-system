@@ -91,7 +91,7 @@ def init_db():
 
 init_db()
 
-# ---------------- HIGH-RES GEMMA/GEMINI VISION WITH CoT ----------------
+# ---------------- AI VISION LEAF PATHOLOGY ----------------
 def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if api_key:
@@ -99,26 +99,27 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
             fast_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
             fast_img.thumbnail((800, 800))
             buf = io.BytesIO()
-            fast_img.save(buf, format="JPEG", quality=92)
+            fast_img.save(buf, format="JPEG", quality=90)
             b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
             prompt = (
-                f"You are an expert Indian agricultural plant pathologist (ICAR/TNAU/IRRI standards). "
-                f"Examine this crop photo carefully (user hint: {crop_hint}). "
-                f"First describe the exact visual features you see, THEN diagnose accurately. "
-                f"RULES: "
-                f"(1) On Chilli/Pepper/Tomato: dark, greasy/water-soaked, irregular or angular lesions, necrotic tearing, yellow halos, or leaf-margin blight = Bacterial Leaf Spot (Xanthomonas campestris pv. vesicatoria) -> treat with Copper Oxychloride 2.5g/L (NOT Mancozeb). Only diagnose Cercospora if spots are strictly uniform circular frogeye rings with clean pale-grey dry centers. "
-                f"(2) On Paddy: distinguish Bacterial Panicle Blight, Bacterial Leaf Blight, Stem Borer Whiteheads, Rice Blast, and Brown Spot. "
-                f"Return ONLY valid JSON with keys IN THIS EXACT ORDER: "
-                f"visual_observation (1 short sentence of exact spot shape, margin, and color seen), "
+                f"You are a warm, expert Indian agricultural plant pathologist (ICAR/TNAU/IRRI standards) helping farmers. "
+                f"Carefully inspect lesion shape, halos, leaves, panicles, and stems (user hint: {crop_hint}). "
+                f"DIFFERENTIAL RULES: "
+                f"(1) Chilli/Tomato: small dark, greasy/water-soaked, irregular or angular spots often with yellow halos = Bacterial Leaf Spot (Xanthomonas -> Copper Oxychloride 2.5g/L, NOT Mancozeb); strictly circular dry frogeye spots with clean grey centers = Cercospora Leaf Spot (Mancozeb 75% WP 2.5g/L). "
+                f"(2) Paddy: distinguish Bacterial Panicle Blight, Bacterial Leaf Blight, Stem Borer Whiteheads, Rice Blast, and Brown Spot. "
+                f"(3) Corn/Maize: oval-to-irregular tan/brown spots with bright yellow-orange halos merging into patches = Anthracnose Leaf Blight (fungicide + crop rotation/residue removal for stalk rot), whereas long cigar-shaped gray-green lesions without bright yellow halos = Northern Corn Leaf Blight. "
+                f"Return ONLY valid JSON with keys IN THIS ORDER: "
+                f"visual_observation (1 short sentence of exact spot shape, halo, and color seen), "
                 f"crop (exact crop name), "
                 f"status (exact disease/pest name or Healthy), "
                 f"healthy (boolean true/false), "
                 f"lesion_pct (number 0-100), "
-                f"advice (2 concise sentences: 1 physical hand/water-ooze check + 1 exact ICAR/TNAU treatment)."
+                f"advice (2-3 simple, friendly sentences: 1 easy physical hand/water check to confirm + 1 exact safe ICAR/TNAU treatment)."
             )
             models = (
                 "gemini-3.5-flash-lite",
-                "gemini-3.8-flash"
+                "gemini-3.8-flash",
+                "gemma-4-31b-it"
             )
             for model_id in models:
                 try:
@@ -155,9 +156,6 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
                     print(f"Model {model_id} exception:", str(me), flush=True)
         except Exception as e:
             print("Image prep exception:", str(e), flush=True)
-    else:
-        print("GEMINI_API_KEY is empty in Render env!", flush=True)
-
     return {
         "crop": crop_hint if crop_hint != "Auto" else "Crop",
         "status": "Analysis Unavailable",
@@ -165,6 +163,34 @@ def identify_crop_and_pathology(image_bytes, crop_hint="Auto"):
         "lesion_pct": 0.0,
         "advice": "AI Vision servers are currently busy. Please resend this photo in a few seconds."
     }
+
+# ---------------- FRIENDLY AI FARMER Q&A ----------------
+def ask_farmer_ai(question):
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    d = system_state["latest"]
+    online = (time.time() - system_state["last_seen"]) <= 15
+    if not api_key:
+        return "Send *STATUS*, *PUMP ON/OFF/AUTO*, *WEATHER*, or a crop leaf photo for instant help!"
+    prompt = (
+        f"You are Krishi Mitra, a warm, friendly Indian farming assistant for farmers in Telangana. "
+        f"Current field conditions ({'LIVE via ' + system_state['network'] if online else 'Offline AVG'}): "
+        f"Air Temp {d['temp']}C, Soil Temp {d['soil_temp']}C, Humidity {d['hum']}%, Soil Moisture {d['soil']}%, "
+        f"Gas {d['gas']} PPM, Flame {'ALERT' if d['flame'] else 'SAFE'}, Rain {'YES' if d['rain'] else 'NO'}, Pump {'ON' if d['pump'] else 'OFF'}. "
+        f"Farmer's question: \"{question}\"\n"
+        f"Reply in 2-4 short, simple, encouraging sentences with practical farming advice (no markdown headings)."
+    )
+    for model_id in ("gemini-3.5-flash-lite", "gemini-3.8-flash", "gemma-4-31b-it"):
+        try:
+            r = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent?key={api_key}",
+                json={"contents": [{"parts": [{"text": prompt}]}]},
+                timeout=8
+            )
+            if r.status_code == 200:
+                return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception:
+            pass
+    return "I'm having trouble connecting right now. You can still send *STATUS*, *PUMP ON/OFF/AUTO*, *WEATHER*, or a leaf photo!"
 
 # ---------------- WHATSAPP SENDER (TWILIO) ----------------
 def format_wa(num):
@@ -392,24 +418,23 @@ def crop_check():
 
 @app.route("/api/chat", methods=["POST"])
 def chat():
-    msg = (request.get_json(force=True).get("message") or "").strip().lower()
-    d = system_state["latest"]
-    online = (time.time() - system_state["last_seen"]) <= 15
-    if any(k in msg for k in ("status", "live", "sensor", "temp", "soil", "moisture")):
-        return jsonify({"reply": f"Node is {'ONLINE via ' + system_state['network'] if online else 'OFFLINE (showing AVG)'}. Air: {d['temp']}°C, Soil Temp: {d['soil_temp']}°C, Humidity: {d['hum']}%, Moisture: {d['soil']}%, Gas: {d['gas']} PPM, Pump: {'ON' if d['pump'] else 'OFF'} ({system_state['pump_mode']})."})
+    raw = (request.get_json(force=True).get("message") or "").strip()
+    msg = raw.lower()
+    if msg in ("status", "live", "sensor"):
+        return jsonify({"reply": build_status_text()})
     if "pump on" in msg:
         system_state["pump_mode"] = "ON"
-        return jsonify({"reply": "Pump mode set to MANUAL ON. The ESP32 will activate the pump on its next heartbeat."})
+        return jsonify({"reply": "Pump mode set to MANUAL ON."})
     if "pump off" in msg:
         system_state["pump_mode"] = "OFF"
         return jsonify({"reply": "Pump mode set to MANUAL OFF."})
-    if "auto" in msg:
+    if msg == "auto" or "pump auto" in msg:
         system_state["pump_mode"] = "AUTO"
-        return jsonify({"reply": "Pump mode restored to AUTO (irrigates below 30% moisture unless raining)."})
+        return jsonify({"reply": "Pump mode restored to AUTO."})
     if "weather" in msg:
         w = get_weather().get_json()
-        return jsonify({"reply": f"Hanamkonda/Warangal Weather: {w['temp']}°C, Wind {w['wind']} km/h, Rain probability {w['rain_prob']}%."})
-    return jsonify({"reply": "Ask me about live status, weather, pump control (PUMP ON/OFF/AUTO), or click the 📷 icon to scan a crop leaf!"})
+        return jsonify({"reply": f"Warangal Weather: {w['temp']}°C, Wind {w['wind']} km/h, Rain probability {w['rain_prob']}%."})
+    return jsonify({"reply": ask_farmer_ai(raw)})
 
 @app.route("/api/whatsapp/test", methods=["POST"])
 def whatsapp_test():
@@ -440,8 +465,12 @@ def whatsapp_webhook():
         except Exception as e:
             reply = f"Could not analyze leaf photo: {e}"
     elif lower in ("hi", "hello", "hey", "menu", "start"):
-        reply = build_status_text() + "\n\n*Commands:* STATUS | PUMP ON | PUMP OFF | PUMP AUTO | WEATHER | or send a leaf photo!"
-    elif "status" in lower:
+        reply = (
+            build_status_text()
+            + "\n\n👋 *Namaste! Ask me any farming doubt* (fertilizer, pests, irrigation) or use:\n"
+            + "*STATUS* | *PUMP ON/OFF/AUTO* | *WEATHER* | or send a crop photo 📷"
+        )
+    elif lower == "status":
         reply = build_status_text()
     elif "pump on" in lower:
         system_state["pump_mode"] = "ON"
@@ -452,11 +481,11 @@ def whatsapp_webhook():
     elif "pump auto" in lower or lower == "auto":
         system_state["pump_mode"] = "AUTO"
         reply = "⚙️ Pump set to *AUTO* mode."
-    elif "weather" in lower:
+    elif lower == "weather":
         w = get_weather().get_json()
         reply = f"🌦️ *Warangal Weather:* {w['temp']}°C | Wind: {w['wind']} km/h | Rain Chance: {w['rain_prob']}%"
     else:
-        reply = "Send *Hi* or *STATUS* for live field data, *PUMP ON/OFF/AUTO*, *WEATHER*, or a crop leaf photo."
+        reply = ask_farmer_ai(body)
 
     twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response><Message>{escape(reply)}</Message></Response>'
     return Response(twiml, mimetype="application/xml")
